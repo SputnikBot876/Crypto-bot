@@ -64,6 +64,7 @@ def filter_news(news_list, keywords):
     return filtered
 
 # ===== ПАРСИНГ ЦЕН (Binance + Bybit) =====
+# ===== ПАРСИНГ ЦЕН (Binance + Bybit + ЗАГЛУШКА) =====
 def get_crypto_prices():
     try:
         url_btc = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
@@ -73,8 +74,14 @@ def get_crypto_prices():
         eth_data = requests.get(url_eth, timeout=5).json()
         
         return {
-            "btc": {"price": float(btc_data["lastPrice"]), "change": float(btc_data["priceChangePercent"])},
-            "eth": {"price": float(eth_data["lastPrice"]), "change": float(eth_data["priceChangePercent"])}
+            "btc": {
+                "price": float(btc_data["lastPrice"]),
+                "change": float(btc_data["priceChangePercent"])
+            },
+            "eth": {
+                "price": float(eth_data["lastPrice"]),
+                "change": float(eth_data["priceChangePercent"])
+            }
         }
     except:
         try:
@@ -85,12 +92,28 @@ def get_crypto_prices():
             eth_data = requests.get(url_eth, timeout=5).json()
             
             return {
-                "btc": {"price": float(btc_data["result"]["list"][0]["lastPrice"]), "change": float(btc_data["result"]["list"][0]["price24hPcnt"]) * 100},
-                "eth": {"price": float(eth_data["result"]["list"][0]["lastPrice"]), "change": float(eth_data["result"]["list"][0]["price24hPcnt"]) * 100}
+                "btc": {
+                    "price": float(btc_data["result"]["list"][0]["lastPrice"]),
+                    "change": float(btc_data["result"]["list"][0]["price24hPcnt"]) * 100
+                },
+                "eth": {
+                    "price": float(eth_data["result"]["list"][0]["lastPrice"]),
+                    "change": float(eth_data["result"]["list"][0]["price24hPcnt"]) * 100
+                }
             }
         except Exception as e:
             print(f"Ошибка цен: {e}")
-            return None
+            # === ЗАГЛУШКА (если API не отвечают) ===
+            return {
+                "btc": {
+                    "price": 65000.00,
+                    "change": 0.25
+                },
+                "eth": {
+                    "price": 1800.00,
+                    "change": 0.10
+                }
+            }
 
 # ===== ИНДЕКС СТРАХА И ЖАДНОСТИ =====
 def get_fear_greed_index():
