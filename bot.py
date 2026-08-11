@@ -65,55 +65,40 @@ def filter_news(news_list, keywords):
 
 # ===== ПАРСИНГ ЦЕН (Binance + Bybit) =====
 # ===== ПАРСИНГ ЦЕН (Binance + Bybit + ЗАГЛУШКА) =====
+# ===== ПАРСИНГ ЦЕН (Binance + Bybit) =====
 def get_crypto_prices():
     try:
-        url_btc = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-        url_eth = "https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT"
-        
-        btc_data = requests.get(url_btc, timeout=5).json()
-        eth_data = requests.get(url_eth, timeout=5).json()
+        # === CoinGecko API ===
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
         
         return {
             "btc": {
-                "price": float(btc_data["lastPrice"]),
-                "change": float(btc_data["priceChangePercent"])
+                "price": float(data["bitcoin"]["usd"]),
+                "change": float(data["bitcoin"]["usd_24h_change"])
             },
             "eth": {
-                "price": float(eth_data["lastPrice"]),
-                "change": float(eth_data["priceChangePercent"])
+                "price": float(data["ethereum"]["usd"]),
+                "change": float(data["ethereum"]["usd_24h_change"])
             }
         }
-    except:
-        try:
-            url_btc = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT"
-            url_eth = "https://api.bybit.com/v5/market/tickers?category=spot&symbol=ETHUSDT"
-            
-            btc_data = requests.get(url_btc, timeout=5).json()
-            eth_data = requests.get(url_eth, timeout=5).json()
-            
-            return {
-                "btc": {
-                    "price": float(btc_data["result"]["list"][0]["lastPrice"]),
-                    "change": float(btc_data["result"]["list"][0]["price24hPcnt"]) * 100
-                },
-                "eth": {
-                    "price": float(eth_data["result"]["list"][0]["lastPrice"]),
-                    "change": float(eth_data["result"]["list"][0]["price24hPcnt"]) * 100
-                }
+    except Exception as e:
+        print(f"Ошибка цен (CoinGecko): {e}")
+        # === ЗАГЛУШКА ===
+        return {
+            "btc": {
+                "price": 65000.00,
+                "change": 0.25
+            },
+            "eth": {
+                "price": 1800.00,
+                "change": 0.10
             }
-        except Exception as e:
-            print(f"Ошибка цен: {e}")
-            # === ЗАГЛУШКА (если API не отвечают) ===
-            return {
-                "btc": {
-                    "price": 65000.00,
-                    "change": 0.25
-                },
-                "eth": {
-                    "price": 1800.00,
-                    "change": 0.10
-                }
-            }
+        }
 
 # ===== ИНДЕКС СТРАХА И ЖАДНОСТИ =====
 def get_fear_greed_index():
