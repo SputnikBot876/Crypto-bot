@@ -61,7 +61,7 @@ REGULATORY_KEYWORDS = [
     "тестирование", "лимит", "неквалифицированный инвестор",
     "вэд", "внешнеторговый", "трансграничные", "обменник",
     "цифровой депозитарий", "брокер", "реформа",
-    
+
     # Расширенные ключевые слова из статьи РБК
     "цифровая валюта", "криптовалюта", "крипта",
     "уголовная ответственность", "идентификация",
@@ -77,7 +77,7 @@ REGULATORY_KEYWORDS = [
     "запрет", "разрешение", "контроль", "надзор"
 ]
 
-# Высокоприоритетные ключевые слова (точное соответствие)
+# Высокоприоритетные ключевые слова
 HIGH_PRIORITY_KEYWORDS = [
     "законопроект о цифровой валюте",
     "регулирование криптовалют",
@@ -115,42 +115,45 @@ def fetch_single_source(source_name, rss_url):
 
 def get_date(item):
     """Надежное получение даты из разных форматов RSS"""
-    # 1. Пробуем стандартный парсер email.utils
+    # 1. Стандартный парсер email.utils
     try:
         return parsedate_to_datetime(item.get("published", ""))
-    except (TypeError, ValueError, Exception):
+    except Exception:
         pass
-    
+
     # 2. Фоллбэк: feedparser уже распарсил дату в time.struct_time
     published_parsed = item.get("published_parsed")
     if published_parsed:
         try:
             return datetime(*published_parsed[:6])
-        except (TypeError, ValueError, Exception):
+        except Exception:
             pass
-    
-    # 3. Если ничего не сработало - возвращаем минимальную дату
+
+    # 3. Если ничего не сработало — минимальная дата
     return datetime.min
 
 def get_crypto_news():
     """Параллельное получение новостей из всех источников"""
     all_news = []
-    
+
     # Используем глобальный executor (не создаем новый)
-    futures = []
-    for source_name, rss_url in RSS_SOURCES:
-        future = news_executor.submit(fetch_single_source, source_name, rss_url)
-        futures.append(future)
-    
+    futures = [
+        news_executor.submit(fetch_single_source, name, url)
+        for name, url in RSS_SOURCES
+    ]
+
     # Собираем результаты по мере завершения
-    for future in as_completed(futures, timeout=15):
-        try:
-            news = future.result(timeout=5)
-            all_news.extend(news)
-        except Exception as e:
-            print(f"[ERROR] Ошибка получения новостей: {e}")
-    
-    # Сортируем по дате публикации (с надежным парсингом)
+    try:
+        for future in as_completed(futures, timeout=15):
+            try:
+                news = future.result(timeout=5)
+                all_news.extend(news)
+            except Exception as e:
+                print(f"[ERROR] Ошибка получения новостей: {e}")
+    except TimeoutError:
+        print("[WARN] Таймаут ожидания RSS-источников (15 сек)")
+
+    # Сортируем по дате публикации
     all_news.sort(key=get_date, reverse=True)
     return all_news
 
@@ -167,56 +170,90 @@ def filter_news_with_priority(news_list, keywords, high_priority_keywords=None):
     """Фильтрация с приоритетами"""
     high_priority = []
     normal_priority = []
-    
+
     for item in news_list:
         title_lower = item['title'].lower()
         matched = False
-        
-        # Проверяем высокоприоритетные слова
+
         if high_priority_keywords:
             for keyword in high_priority_keywords:
                 if keyword.lower() in title_lower:
                     high_priority.append(item)
                     matched = True
                     break
-        
-        # Если не высокий приоритет, проверяем обычные
+
         if not matched:
             if any(kw.lower() in title_lower for kw in keywords):
                 normal_priority.append(item)
-    
-    # Высокоприоритетные новости идут первыми
+
     return high_priority + normal_priority
 
 def get_high_priority_news(news_list):
     """Получение только высокоприоритетных новостей"""
     return filter_news_with_priority(news_list, [], HIGH_PRIORITY_KEYWORDS)
 
-# ===== ПАРСИНГ ЦЕН (С ЗАЩИТОЙ) =====
+# ===== ПАРСИНГ ЦЕН (CoinGecko → Binance → Bybit) =====
 def get_crypto_prices():
-    headers = {"User-Agent": "Mozilla/5.0 (CryptoBot/1.0)"}
-    apis = [
-        {
-            "name": "Binance",
-            "btc": "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
-            "eth": "https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT",
-            "parse": lambda d: {"price": float(d["lastPrice"]), "change": float(d["priceChangePercent"])}
-        },
-        {
-            "name": "Bybit",
-            "btc": "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT",
-            "eth": "https://api.bybit.com/v5/market/tickers?category=spot&symbol=ETHUSDT",
-            "parse": lambda d: {"price": float(d["result"]["list"][0]["lastPrice"]), "change": float(d["result"]["list"][0]["price24hPcnt"]) * 100}
+    """Получение цен с тройным фоллбэком. CoinGecko работает с облачных серверов."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (CryptoBot/1.0)",
+        "Accept": "application/json"
+    }
+
+    # Источник 1: CoinGecko (бесплатный, без ключа, не блокирует облачные IP)
+    try:
+        url = ("https://api.coingecko.com/api/v3/simple/price"
+               "?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true")
+        data = requests.get(url, timeout=7, headers=headers).json()
+        return {
+            "btc": {
+                "price": float(data["bitcoin"]["usd"]),
+                "change": float(data["bitcoin"]["usd_24h_change"])
+            },
+            "eth": {
+                "price": float(data["ethereum"]["usd"]),
+                "change": float(data["ethereum"]["usd_24h_change"])
+            }
         }
-    ]
-    
-    for api in apis:
-        try:
-            btc_raw = requests.get(api["btc"], timeout=7, headers=headers).json()
-            eth_raw = requests.get(api["eth"], timeout=7, headers=headers).json()
-            return {"btc": api["parse"](btc_raw), "eth": api["parse"](eth_raw)}
-        except Exception as e:
-            print(f"[WARN] {api['name']} недоступен: {e}")
+    except Exception as e:
+        print(f"[WARN] CoinGecko недоступен: {e}")
+
+    # Источник 2: Binance
+    try:
+        btc_raw = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
+            timeout=7, headers=headers
+        ).json()
+        eth_raw = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT",
+            timeout=7, headers=headers
+        ).json()
+        return {
+            "btc": {"price": float(btc_raw["lastPrice"]), "change": float(btc_raw["priceChangePercent"])},
+            "eth": {"price": float(eth_raw["lastPrice"]), "change": float(eth_raw["priceChangePercent"])}
+        }
+    except Exception as e:
+        print(f"[WARN] Binance недоступен: {e}")
+
+    # Источник 3: Bybit
+    try:
+        btc_raw = requests.get(
+            "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT",
+            timeout=7, headers=headers
+        ).json()
+        eth_raw = requests.get(
+            "https://api.bybit.com/v5/market/tickers?category=spot&symbol=ETHUSDT",
+            timeout=7, headers=headers
+        ).json()
+        return {
+            "btc": {"price": float(btc_raw["result"]["list"][0]["lastPrice"]),
+                    "change": float(btc_raw["result"]["list"][0]["price24hPcnt"]) * 100},
+            "eth": {"price": float(eth_raw["result"]["list"][0]["lastPrice"]),
+                    "change": float(eth_raw["result"]["list"][0]["price24hPcnt"]) * 100}
+        }
+    except Exception as e:
+        print(f"[WARN] Bybit недоступен: {e}")
+
     return None
 
 def get_fear_greed_index():
@@ -229,33 +266,27 @@ def get_fear_greed_index():
 
 # ===== БЕЗОПАСНАЯ ОТПРАВКА СООБЩЕНИЙ (HTML) =====
 def safe_send(chat_id, text):
-    """Отправка с автоматическим экранированием HTML и обработкой ошибок"""
+    """Отправка с обработкой ошибок и фоллбэком на plain text"""
     try:
         bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
-    except telebot.apihelper.ApiTelegramException as e:
-        # Если HTML сломан, пробуем отправить как обычный текст
+    except telebot.apihelper.ApiTelegramException:
         try:
             bot.send_message(chat_id, f"(Сообщение без форматирования)\n{text}", disable_web_page_preview=True)
-        except Exception:
+        except Exception as e:
             print(f"[ERROR] Не удалось отправить сообщение в {chat_id}: {e}")
 
-# ===== УПРАВЛЕНИЕ КЭШЕМ НОВОСТЕЙ (С ЗАЩИТОЙ ОТ ГОНОК) =====
+# ===== УПРАВЛЕНИЕ КЭШЕМ НОВОСТЕЙ (thread-safe) =====
 def add_to_cache(chat_id, link):
-    """Добавление ссылки в кэш с сохранением порядка (thread-safe)"""
+    """Добавление ссылки в кэш с сохранением порядка"""
     with cache_lock:
         if chat_id not in sent_news_cache:
             sent_news_cache[chat_id] = OrderedDict()
-        
-        # Добавляем или обновляем ссылку
         sent_news_cache[chat_id][link] = time.time()
-        
-        # Ограничиваем размер кэша (удаляем самые старые)
         while len(sent_news_cache[chat_id]) > CACHE_MAX_SIZE:
-            # Удаляем первый (самый старый) элемент
             sent_news_cache[chat_id].popitem(last=False)
 
 def is_news_sent(chat_id, link):
-    """Проверка, была ли новость уже отправлена (thread-safe)"""
+    """Проверка, была ли новость уже отправлена"""
     with cache_lock:
         return chat_id in sent_news_cache and link in sent_news_cache[chat_id]
 
@@ -266,7 +297,7 @@ def get_new_news(chat_id, news_list):
 # ===== ЛОГИКА РАССЫЛКИ =====
 def monitor_loop(chat_id, stop_event):
     safe_send(chat_id, "🔁 <b>Мониторинг запущен!</b>\nРассылка каждые 30 минут.\nДля остановки: /stop")
-    
+
     while not stop_event.is_set():
         try:
             # 1. Цены
@@ -279,29 +310,26 @@ def monitor_loop(chat_id, stop_event):
                     f"ETH: ${eth['price']:,.2f} ({eth['change']:+.2f}%)"
                 )
                 safe_send(chat_id, price_msg)
-            
+
             # 2. Новости (без дублей)
             all_news = get_crypto_news()
             filtered = filter_news(all_news, CRYPTO_KEYWORDS + REGULATORY_KEYWORDS)
-            
-            # Получаем только новые новости
             new_items = get_new_news(chat_id, filtered)
-            
+
             if new_items:
                 msg = f"📰 <b>Крипто-новости</b> ({datetime.now().strftime('%H:%M')})\n\n"
                 for item in new_items[:5]:
                     title = escape(item['title'])
                     msg += f"• <a href=\"{item['link']}\">{title}</a>\n  📌 {escape(item['source'])}\n\n"
                     add_to_cache(chat_id, item["link"])
-                
                 safe_send(chat_id, msg)
-                
+
         except Exception as e:
             print(f"[ERROR] Мониторинг {chat_id}: {e}")
-        
-        # Ждем 30 минут, но прерываемся мгновенно если stop_event установлен
+
+        # Ждем 30 минут, прерываемся мгновенно при stop_event
         stop_event.wait(timeout=1800)
-    
+
     safe_send(chat_id, "⏹ <b>Мониторинг остановлен.</b>")
 
 # ===== КОМАНДЫ БОТА =====
@@ -328,7 +356,9 @@ def price_command(message):
         safe_send(message.chat.id, "❌ Не удалось получить цены. Попробуйте позже.")
         return
     btc, eth = prices["btc"], prices["eth"]
-    msg = f"💰 <b>Актуальные цены</b>\n\n<b>BTC:</b> ${btc['price']:,.2f} ({btc['change']:+.2f}%)\n<b>ETH:</b> ${eth['price']:,.2f} ({eth['change']:+.2f}%)"
+    msg = (f"💰 <b>Актуальные цены</b>\n\n"
+           f"<b>BTC:</b> ${btc['price']:,.2f} ({btc['change']:+.2f}%)\n"
+           f"<b>ETH:</b> ${eth['price']:,.2f} ({eth['change']:+.2f}%)")
     safe_send(message.chat.id, msg)
 
 @bot.message_handler(commands=['sentiment'])
@@ -337,13 +367,11 @@ def sentiment_command(message):
     if not fng:
         safe_send(message.chat.id, "❌ Не удалось получить индекс.")
         return
-    
-    v = fng["value"]
-    c = fng["classification"]
-    
+
+    v, c = fng["value"], fng["classification"]
     emoji_map = {"Extreme Fear": "😱", "Fear": "😨", "Neutral": "😐", "Greed": "😊", "Extreme Greed": "🤑"}
     emoji = emoji_map.get(c, "😐")
-    
+
     advice = ""
     if v <= 25: advice = "📌 Рынок в панике. Возможность присмотреться к покупке."
     elif v <= 45: advice = "📌 На рынке страх. Можно добавлять небольшими частями."
@@ -370,7 +398,7 @@ def news_command(message):
     if not filtered:
         safe_send(message.chat.id, "📭 Новостей пока нет.")
         return
-    
+
     msg = f"📰 <b>Крипто-новости</b> ({datetime.now().strftime('%H:%M')})\n\n"
     for item in filtered[:5]:
         title = escape(item['title'])
@@ -383,25 +411,16 @@ def law_command(message):
     if not all_news:
         safe_send(message.chat.id, "📭 Новостей пока нет.")
         return
-    
-    # Используем фильтр с приоритетами
-    filtered = filter_news_with_priority(
-        all_news, 
-        REGULATORY_KEYWORDS,
-        HIGH_PRIORITY_KEYWORDS
-    )
-    
+
+    filtered = filter_news_with_priority(all_news, REGULATORY_KEYWORDS, HIGH_PRIORITY_KEYWORDS)
     if not filtered:
         safe_send(message.chat.id, "📭 Регуляторных новостей пока нет.")
         return
-    
+
     msg = f"📜 <b>Регуляторные новости</b> ({datetime.now().strftime('%H:%M')})\n\n"
-    
-    # Показываем до 10 новостей
     for item in filtered[:10]:
         title = escape(item['title'])
         msg += f"• <a href=\"{item['link']}\">{title}</a>\n  📌 {escape(item['source'])}\n\n"
-    
     safe_send(message.chat.id, msg)
 
 @bot.message_handler(commands=['top_law'])
@@ -411,19 +430,16 @@ def top_law_command(message):
     if not all_news:
         safe_send(message.chat.id, "📭 Новостей пока нет.")
         return
-    
-    # Используем общую функцию фильтрации
+
     high_priority_news = get_high_priority_news(all_news)
-    
     if not high_priority_news:
         safe_send(message.chat.id, "📭 Важных регуляторных новостей нет.")
         return
-    
+
     msg = f"🚨 <b>Важные регуляторные новости</b> ({datetime.now().strftime('%H:%M')})\n\n"
     for item in high_priority_news[:10]:
         title = escape(item['title'])
         msg += f"• <a href=\"{item['link']}\">{title}</a>\n  📌 {escape(item['source'])}\n\n"
-    
     safe_send(message.chat.id, msg)
 
 @bot.message_handler(commands=['monitor'])
@@ -432,7 +448,7 @@ def monitor_command(message):
     if chat_id in monitoring_states and not monitoring_states[chat_id].is_set():
         safe_send(chat_id, "⚠️ Рассылка уже запущена. Используйте /stop для остановки.")
         return
-    
+
     stop_event = threading.Event()
     monitoring_states[chat_id] = stop_event
     thread = threading.Thread(target=monitor_loop, args=(chat_id, stop_event), daemon=True)
@@ -442,7 +458,7 @@ def monitor_command(message):
 def stop_command(message):
     chat_id = message.chat.id
     if chat_id in monitoring_states and not monitoring_states[chat_id].is_set():
-        monitoring_states[chat_id].set()  # Сигнализируем потоку остановиться
+        monitoring_states[chat_id].set()
         del monitoring_states[chat_id]
     else:
         safe_send(chat_id, "ℹ️ Рассылка не была запущена.")
@@ -455,7 +471,7 @@ def fallback(message):
 if __name__ == "__main__":
     print("✅ Бот запущен! Ваш бот: t.me/Sputnik_876_bot")
     print("📌 Команды: /price, /sentiment, /news, /law, /top_law, /monitor, /stop")
-    
+
     try:
         bot.infinity_polling(skip_pending=True)
     finally:
